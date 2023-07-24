@@ -8,7 +8,7 @@ import {
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { PaginationDto } from '../common/dtos/pagination.dto';
 import { validate as isUUID } from 'uuid';
@@ -21,6 +21,7 @@ export class ProductsService {
     private readonly productRepository: Repository<Product>,
     @InjectRepository(ProductImage)
     private readonly productImagesRepository: Repository<ProductImage>,
+    private readonly dataSource: DataSource,
   ) {}
   async create(createProductDto: CreateProductDto) {
     try {
@@ -100,10 +101,28 @@ export class ProductsService {
       throw new NotFoundException(`Product with term ${id} not found`);
     }
 
+    //create query runner
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
-      await this.productRepository.save(product);
-      return product;
+      if (images) {
+        await queryRunner.manager.delete(ProductImage, { product: { id } });
+        product.images = images.map((image) =>
+          this.productImagesRepository.create({ url: image }),
+        );
+      }
+      await queryRunner.manager.save(product);
+
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
+      // await this.productRepository.save(product);
+      return this.findOnePlain(id);
     } catch (error) {
+      await queryRunner.rollbackTransaction();
+      await queryRunner.release();
+
       this.handleDBExceptions(error);
     }
   }
@@ -122,5 +141,15 @@ export class ProductsService {
     throw new InternalServerErrorException(
       'unexpected error, check server logs',
     );
+  }
+
+  async deleteAllProducts() {
+    const query = this.productRepository.createQueryBuilder('product');
+
+    try {
+      return await query.delete().where({}).execute();
+    } catch (error) {
+      this.handleDBExceptions(error);
+    }
   }
 }
